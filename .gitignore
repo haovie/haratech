@@ -1,0 +1,8 @@
+node_modules
+.turbo
+.DS_Store
+.venv
+.env.sentry-build-plugin
+
+# Tizen packaging output
+apps/tizen/dist/

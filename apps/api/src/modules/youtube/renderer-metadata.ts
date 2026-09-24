@@ -1,0 +1,296 @@
+import { parseYoutubeViewCountText } from '@vkara/youtube';
+
+const AUDIENCE_COUNT_PATTERN =
+    /([\d.,]+)\s*([KMBkmb])?\s*(?:watching|viewers?|đang xem|người xem|người đang xem)/i;
+
+const VERIFIED_BADGE_STYLES = new Set([
+    'BADGE_STYLE_TYPE_VERIFIED',
+    'BADGE_STYLE_TYPE_VERIFIED_ARTIST',
+]);
+
+export interface RendererMetadataMaps {
+    verifiedByVideoId: Map<string, boolean>;
+    viewCountByVideoId: Map<string, number>;
+    /** Lockup playlist row-0 artist/channel label when compact.channel is omitted. */
+    channelNameByVideoId: Map<string, string>;
+}
+
+/** Collab lockups use "Artist and 2 more"; keep "Artist and DTAP" intact. */
+export function normalizeLockupChannelLabel(label: string): string {
+    return label.trim().replace(/\s+and\s+\d+\s+more$/i, '').trim();
+}
+
+const hasVerifiedOwnerBadge = (ownerBadges: unknown[] = []): boolean =>
+    ownerBadges.some((badge) => {
+        const style = (badge as { metadataBadgeRenderer?: { style?: string } })
+            ?.metadataBadgeRenderer?.style;
+        return VERIFIED_BADGE_STYLES.has(style ?? '');
+    });
+
+type TextRunSource = {
+    simpleText?: string;
+    runs?: Array<{ text?: string }>;
+    content?: string;
+};
+
+type CompactVideoRenderer = {
+    videoId?: string;
+    ownerBadges?: unknown[];
+    viewCountText?: TextRunSource;
+    shortViewCountText?: TextRunSource;
+    shortViewsText?: TextRunSource;
+};
+
+const joinTextSource = (source?: TextRunSource): string | undefined => {
+    if (!source) {
+        return undefined;
+    }
+
+    if (typeof source.content === 'string' && source.content.length > 0) {
+        return source.content;
+    }
+
+    if (typeof source.simpleText === 'string' && source.simpleText.length > 0) {
+        return source.simpleText;
+    }
+
+    if (source.runs?.length) {
+        const joined = source.runs.map((run) => run.text ?? '').join('');
+        return joined.length > 0 ? joined : undefined;
+    }
+
+    return undefined;
+};
+
+const getVideoRenderer = (node: Record<string, unknown>): CompactVideoRenderer | undefined =>
+    (node.videoRenderer ??
+        node.compactVideoRenderer ??
+        node.playlistVideoRenderer ??
+        node.playlistPanelVideoRenderer) as CompactVideoRenderer | undefined;
+
+const extractViewCountText = (renderer: CompactVideoRenderer): string | undefined => {
+    const direct =
+        joinTextSource(renderer.viewCountText) ??
+        joinTextSource(renderer.shortViewCountText) ??
+        joinTextSource(renderer.shortViewsText);
+    if (direct) {
+        return direct;
+    }
+
+    return findAudienceCountText(renderer);
+};
+
+/** Scan renderer subtree when viewCountText is omitted (common for live search cards). */
+const findAudienceCountText = (node: unknown): string | undefined => {
+    if (!node || typeof node !== 'object') {
+        return undefined;
+    }
+
+    if (Array.isArray(node)) {
+        for (const item of node) {
+            const found = findAudienceCountText(item);
+            if (found) {
+                return found;
+            }
+        }
+        return undefined;
+    }
+
+    const record = node as Record<string, unknown>;
+
+    for (const key of ['simpleText', 'content'] as const) {
+        const value = record[key];
+        if (typeof value === 'string' && AUDIENCE_COUNT_PATTERN.test(value)) {
+            return value;
+        }
+    }
+
+    const runs = record.runs;
+    if (Array.isArray(runs)) {
+        const joined = runs.map((run) => (run as { text?: string }).text ?? '').join('');
+        if (AUDIENCE_COUNT_PATTERN.test(joined)) {
+            return joined;
+        }
+    }
+
+    for (const value of Object.values(record)) {
+        if (value && typeof value === 'object') {
+            const found = findAudienceCountText(value);
+            if (found) {
+                return found;
+            }
+        }
+    }
+
+    return undefined;
+};
+
+const setParsedViewCount = (
+    maps: RendererMetadataMaps,
+    videoId: string,
+    viewCountText: string | undefined,
+): void => {
+    if (!viewCountText) {
+        return;
+    }
+
+    const parsed = parseYoutubeViewCountText(viewCountText);
+    if (parsed !== null && parsed > 0) {
+        maps.viewCountByVideoId.set(videoId, parsed);
+    }
+};
+
+type LockupMetadataRows = Array<{
+    metadataParts?: Array<{ text?: TextRunSource }>;
+}>;
+
+const getLockupMetadataRows = (lockup: Record<string, unknown>): LockupMetadataRows | undefined =>
+    (
+        lockup.metadata as
+            | {
+                  lockupMetadataViewModel?: {
+                      metadata?: {
+                          contentMetadataViewModel?: {
+                              metadataRows?: LockupMetadataRows;
+                          };
+                      };
+                  };
+              }
+            | undefined
+    )?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows;
+
+const looksLikeUploadDate = (text: string): boolean =>
+    /\b(ago|hour|day|week|month|year|streamed|yesterday|today)\b/i.test(text) ||
+    /\b(trước|hôm qua|hôm nay)\b/i.test(text) ||
+    /\b\d+\s*(giờ|ngày|tuần|tháng|năm)\b/i.test(text);
+
+const extractLockupChannelName = (lockup: Record<string, unknown>): string | undefined => {
+    const metadataParts = getLockupMetadataRows(lockup)?.[0]?.metadataParts;
+    if (!metadataParts?.length) {
+        return undefined;
+    }
+
+    const joined = metadataParts
+        .map((part) => joinTextSource(part.text))
+        .filter((text): text is string => Boolean(text))
+        .join('');
+
+    const normalized = joined ? normalizeLockupChannelLabel(joined) : '';
+    return normalized || undefined;
+};
+
+const extractLockupViewCountText = (lockup: Record<string, unknown>): string | undefined => {
+    const metadataParts = getLockupMetadataRows(lockup)?.[1]?.metadataParts;
+    if (!metadataParts?.length) {
+        return undefined;
+    }
+
+    if (metadataParts.length === 1) {
+        return joinTextSource(metadataParts[0]?.text);
+    }
+
+    const lastText = joinTextSource(metadataParts.at(-1)?.text) ?? '';
+    const viewParts = looksLikeUploadDate(lastText) ? metadataParts.slice(0, -1) : metadataParts;
+    const joined = viewParts
+        .map((part) => joinTextSource(part.text))
+        .filter((text): text is string => Boolean(text))
+        .join('');
+
+    return joined || undefined;
+};
+
+const collectLockupMetadata = (
+    lockup: Record<string, unknown>,
+    maps: RendererMetadataMaps,
+): void => {
+    if (lockup.contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO') {
+        return;
+    }
+
+    const videoId = typeof lockup.contentId === 'string' ? lockup.contentId : undefined;
+    if (!videoId) {
+        return;
+    }
+
+    const channelName = extractLockupChannelName(lockup);
+    if (channelName) {
+        maps.channelNameByVideoId.set(videoId, channelName);
+    }
+
+    setParsedViewCount(maps, videoId, extractLockupViewCountText(lockup));
+};
+
+/** Merge metadata maps from multiple InnerTube payloads (e.g. playlist browse pages). */
+export function mergeRendererMetadata(
+    ...sources: RendererMetadataMaps[]
+): RendererMetadataMaps {
+    const merged: RendererMetadataMaps = {
+        verifiedByVideoId: new Map(),
+        viewCountByVideoId: new Map(),
+        channelNameByVideoId: new Map(),
+    };
+
+    for (const source of sources) {
+        for (const [videoId, verified] of source.verifiedByVideoId) {
+            merged.verifiedByVideoId.set(
+                videoId,
+                merged.verifiedByVideoId.get(videoId) || verified,
+            );
+        }
+
+        for (const [videoId, views] of source.viewCountByVideoId) {
+            merged.viewCountByVideoId.set(videoId, views);
+        }
+
+        for (const [videoId, channelName] of source.channelNameByVideoId) {
+            if (!merged.channelNameByVideoId.has(videoId)) {
+                merged.channelNameByVideoId.set(videoId, channelName);
+            }
+        }
+    }
+
+    return merged;
+}
+
+/** Extract renderer metadata from a raw YouTube InnerTube response payload. */
+export const extractRendererMetadata = (data: unknown): RendererMetadataMaps => {
+    const maps: RendererMetadataMaps = {
+        verifiedByVideoId: new Map(),
+        viewCountByVideoId: new Map(),
+        channelNameByVideoId: new Map(),
+    };
+    collectRendererMetadata(data, maps);
+    return maps;
+};
+
+const collectRendererMetadata = (node: unknown, maps: RendererMetadataMaps): void => {
+    if (!node || typeof node !== 'object') {
+        return;
+    }
+
+    if (Array.isArray(node)) {
+        node.forEach((item) => collectRendererMetadata(item, maps));
+        return;
+    }
+
+    const record = node as Record<string, unknown>;
+
+    if (record.lockupViewModel && typeof record.lockupViewModel === 'object') {
+        collectLockupMetadata(record.lockupViewModel as Record<string, unknown>, maps);
+    }
+
+    const renderer = getVideoRenderer(record);
+    const videoId = renderer?.videoId;
+
+    if (videoId) {
+        const isVerified = hasVerifiedOwnerBadge(renderer.ownerBadges);
+        maps.verifiedByVideoId.set(videoId, maps.verifiedByVideoId.get(videoId) || isVerified);
+        setParsedViewCount(maps, videoId, extractViewCountText(renderer));
+    }
+
+    for (const value of Object.values(record)) {
+        if (value && typeof value === 'object') {
+            collectRendererMetadata(value, maps);
+        }
+    }
+};
