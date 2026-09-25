@@ -7,6 +7,7 @@ services:
     vkara_api:
         container_name: vkara-api
         hostname: vkara-api
+        platform: linux/amd64
         profiles:
             - api
         build:
