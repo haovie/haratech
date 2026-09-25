@@ -7,7 +7,9 @@ export function getSiteUrl(): URL {
         return new URL(fromEnv.endsWith('/') ? fromEnv : `${fromEnv}/`);
     }
 
-    const vercel = env.VERCEL_URL?.trim();
+    const vercel =
+        process.env.NEXT_PUBLIC_VERCEL_URL?.trim() ||
+        (typeof window === 'undefined' ? env.VERCEL_URL?.trim() : undefined);
     if (vercel) {
         return new URL(`https://${vercel}/`);
     }

@@ -33,10 +33,23 @@ export function isExperimentsEnabled(
     return parseEnvFlagValue(env.VKARA_EXPERIMENTS, false);
 }
 
-/** Web client mirror for Settings visibility (falls back to server flag when unset). */
-export function isExperimentsEnabledOnWeb(env: ExperimentsEnvValues): boolean {
+/** Web client mirror for Settings visibility (falls back to server flag when unset in server context). */
+export function isExperimentsEnabledOnWeb(
+    env: Pick<ExperimentsEnvValues, 'NEXT_PUBLIC_VKARA_EXPERIMENTS'> &
+        Partial<Pick<ExperimentsEnvValues, 'VKARA_EXPERIMENTS'>>,
+): boolean {
     if (env.NEXT_PUBLIC_VKARA_EXPERIMENTS !== undefined) {
         return parseEnvFlagValue(env.NEXT_PUBLIC_VKARA_EXPERIMENTS, false);
     }
-    return isExperimentsEnabled(env);
+    // Only fall back to VKARA_EXPERIMENTS in server runtime (SSR / Node).
+    // On the client bundle, accessing server env properties throws an Error via @t3-oss/env-nextjs proxy.
+    if (typeof window === 'undefined') {
+        try {
+            return parseEnvFlagValue(env.VKARA_EXPERIMENTS, false);
+        } catch {
+            return false;
+        }
+    }
+    return false;
 }
+

@@ -117,7 +117,7 @@ export default async function RootLayout({
                         </Suspense>
                     </I18nProvider>
                 </ThemeProvider>
-                <Analytics />
+                {(process.env.VERCEL_ENV || process.env.NEXT_PUBLIC_VERCEL_ENV) && <Analytics />}
                 {env.NEXT_PUBLIC_GOOGLE_ANALYTICS_ID && (
                     <GoogleAnalytics gaId={env.NEXT_PUBLIC_GOOGLE_ANALYTICS_ID} />
                 )}

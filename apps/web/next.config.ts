@@ -30,6 +30,8 @@ const nextConfig: NextConfig = {
     env: {
         NEXT_PUBLIC_VERCEL_ENV: process.env.VERCEL_ENV ?? '',
         NEXT_PUBLIC_VERCEL_URL: process.env.VERCEL_URL ?? '',
+        NEXT_PUBLIC_VKARA_EXPERIMENTS:
+            process.env.NEXT_PUBLIC_VKARA_EXPERIMENTS ?? process.env.VKARA_EXPERIMENTS ?? '',
     },
     // Dev-only: tunnel hostname used when browsing via vkara-local.* instead of localhost.
     allowedDevOrigins: allowedDevOriginsFromEnv(),
